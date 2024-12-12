@@ -1,10 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * DRM driver for 2.7" Sharp Memory LCD
- *
- * Copyright 2023 Andrew D'Angelo
- */
-
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -38,7 +31,7 @@
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
-struct sharp_memory_panel {
+struct jdi_memory_panel {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
 	const struct drm_display_mode *mode;
@@ -62,18 +55,18 @@ struct sharp_memory_panel {
 	struct gpio_desc *gpio_vcom;
 };
 
-static struct sharp_memory_panel* g_panel = NULL;
+static struct jdi_memory_panel* g_panel = NULL;
 
-static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
+static inline struct jdi_memory_panel *drm_to_panel(struct drm_device *drm)
 {
-	return container_of(drm, struct sharp_memory_panel, drm);
+	return container_of(drm, struct jdi_memory_panel, drm);
 }
 
 static void vcom_timer_callback(struct timer_list *t)
 {
 	static u8 vcom_setting = 0;
 
-	struct sharp_memory_panel *panel = from_timer(panel, t, vcom_timer);
+	struct jdi_memory_panel *panel = from_timer(panel, t, vcom_timer);
 
 	// Toggle the GPIO pin
 	vcom_setting = (vcom_setting) ? 0 : 1;
@@ -83,7 +76,7 @@ static void vcom_timer_callback(struct timer_list *t)
 	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(1000));
 }
 
-static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
+static int jdi_memory_spi_clear_screen(struct jdi_memory_panel *panel)
 {
 	int rc;
 
@@ -103,15 +96,16 @@ static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
 	return rc;
 }
 
-static inline u8 sharp_memory_reverse_byte(u8 b)
+static inline u8 jdi_memory_reverse_byte(u8 b)
 {
-	b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
-	b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
-	b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+	// Disable for JDI Screen
+	// b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+	// b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+	// b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
 	return b;
 }
 
-static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
+static int jdi_memory_spi_write_tagged_lines(struct jdi_memory_panel *panel,
 	void *line_data, size_t len)
 {
 	int rc;
@@ -137,7 +131,7 @@ static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
 	return rc;
 }
 
-static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width,
+static void draw_indicators(struct jdi_memory_panel *panel, u8* buf, int width,
 	struct drm_rect const* clip)
 {
 	int i, dx, dy, sx, sy;
@@ -177,7 +171,7 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 	}
 }
 
-static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, int y0)
+static size_t jdi_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, int y0)
 {
 	int line, b8, b1;
 	unsigned char d;
@@ -219,7 +213,7 @@ static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, 
 		}
 
 		// Write the line number and trailer tags
-		buf[line * tagged_line_len] = sharp_memory_reverse_byte((u8)(y0 + 1)); // Indexed from 1
+		buf[line * tagged_line_len] = jdi_memory_reverse_byte((u8)(y0 + 1)); // Indexed from 1
 		buf[(line * tagged_line_len) + tagged_line_len - 1] = 0;
 		y0++;
 	}
@@ -230,7 +224,7 @@ static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, 
 // Use DMA to get grayscale representation, then convert to mono
 // with line number and trailer tags suitable for multi-line write
 // Output is stored in `buf`, which must be at least W*H bytes
-static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_t* result_len,
+static int jdi_memory_clip_mono_tagged(struct jdi_memory_panel* panel, size_t* result_len,
 	u8* buf, struct drm_framebuffer *fb, struct drm_rect const* clip)
 {
 	int rc;
@@ -266,19 +260,19 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	}
 
 	// Convert in-place from 8-bit grayscale to mono
-	*result_len = sharp_memory_gray8_to_mono_tagged(buf,
+	*result_len = jdi_memory_gray8_to_mono_tagged(buf,
 		(clip->x2 - clip->x1), (clip->y2 - clip->y1), clip->y1);
 
 	// Success
 	return 0;
 }
 
-static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
+static int jdi_memory_fb_dirty(struct drm_framebuffer *fb,
 	struct drm_rect const* dirty_rect)
 {
 	int rc;
 	struct drm_rect clip;
-	struct sharp_memory_panel *panel;
+	struct jdi_memory_panel *panel;
 	int drm_idx;
 	size_t buf_len;
 
@@ -297,13 +291,13 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 	}
 
 	// Convert `clip` from framebuffer to mono with line number tags
-	rc = sharp_memory_clip_mono_tagged(panel, &buf_len, panel->buf, fb, &clip);
+	rc = jdi_memory_clip_mono_tagged(panel, &buf_len, panel->buf, fb, &clip);
 	if (rc) {
 		goto out_exit;
 	}
 
 	// Write mono data to display
-	rc = sharp_memory_spi_write_tagged_lines(panel, panel->buf, buf_len);
+	rc = jdi_memory_spi_write_tagged_lines(panel, panel->buf, buf_len);
 
 out_exit:
 	// Exit DRM device resource area
@@ -313,23 +307,23 @@ out_exit:
 }
 
 
-static void power_off(struct sharp_memory_panel *panel)
+static void power_off(struct jdi_memory_panel *panel)
 {
-	printk(KERN_INFO "sharp_memory: powering off\n");
+	printk(KERN_INFO "jdi_memory: powering off\n");
 
 	/* Turn off power and all signals */
 	gpiod_set_value(panel->gpio_disp, 0);
 	gpiod_set_value(panel->gpio_vcom, 0);
 }
 
-static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
+static void jdi_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct drm_crtc_state *crtc_state, struct drm_plane_state *plane_state)
 {
-	struct sharp_memory_panel *panel;
+	struct jdi_memory_panel *panel;
 	struct spi_device *spi;
 	int drm_idx;
 
-	printk(KERN_INFO "sharp_memory: entering sharp_memory_pipe_enable\n");
+	printk(KERN_INFO "jdi_memory: entering jdi_memory_pipe_enable\n");
 
 	// Get panel and SPI device structs
 	panel = drm_to_panel(pipe->crtc.dev);
@@ -346,7 +340,7 @@ static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	usleep_range(5000, 10000);
 
 	// Clear display
-	if (sharp_memory_spi_clear_screen(panel)) {
+	if (jdi_memory_spi_clear_screen(panel)) {
 		gpiod_set_value(panel->gpio_disp, 0); // Power down display, VCOM is not running
 		goto out_exit;
 	}
@@ -355,18 +349,18 @@ static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	timer_setup(&panel->vcom_timer, vcom_timer_callback, 0);
 	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(500));
 
-	printk(KERN_INFO "sharp_memory: completed sharp_memory_pipe_enable\n");
+	printk(KERN_INFO "jdi_memory: completed jdi_memory_pipe_enable\n");
 
 out_exit:
 	drm_dev_exit(drm_idx);
 }
 
-static void sharp_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
+static void jdi_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
-	struct sharp_memory_panel *panel;
+	struct jdi_memory_panel *panel;
 	struct spi_device *spi;
 
-	printk(KERN_INFO "sharp_memory: sharp_memory_pipe_disable\n");
+	printk(KERN_INFO "jdi_memory: jdi_memory_pipe_disable\n");
 
 	// Get panel and SPI device structs
 	panel = drm_to_panel(pipe->crtc.dev);
@@ -378,7 +372,7 @@ static void sharp_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
 	power_off(panel);
 }
 
-static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
+static void jdi_memory_pipe_update(struct drm_simple_display_pipe *pipe,
 				struct drm_plane_state *old_state)
 {
 	struct drm_plane_state *state = pipe->plane.state;
@@ -389,20 +383,20 @@ static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
 	}
 
 	if (drm_atomic_helper_damage_merged(old_state, state, &rect)) {
-		sharp_memory_fb_dirty(state->fb, &rect);
+		jdi_memory_fb_dirty(state->fb, &rect);
 	}
 }
 
-static const struct drm_simple_display_pipe_funcs sharp_memory_pipe_funcs = {
-	.enable = sharp_memory_pipe_enable,
-	.disable = sharp_memory_pipe_disable,
-	.update = sharp_memory_pipe_update,
+static const struct drm_simple_display_pipe_funcs jdi_memory_pipe_funcs = {
+	.enable = jdi_memory_pipe_enable,
+	.disable = jdi_memory_pipe_disable,
+	.update = jdi_memory_pipe_update,
 	.prepare_fb = drm_gem_simple_display_pipe_prepare_fb,
 };
 
-static int sharp_memory_connector_get_modes(struct drm_connector *connector)
+static int jdi_memory_connector_get_modes(struct drm_connector *connector)
 {
-	struct sharp_memory_panel *panel = drm_to_panel(connector->dev);
+	struct jdi_memory_panel *panel = drm_to_panel(connector->dev);
 
 	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
@@ -423,11 +417,11 @@ static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev, struc
 	return fb;
 }
 
-static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
-	.get_modes = sharp_memory_connector_get_modes,
+static const struct drm_connector_helper_funcs jdi_memory_connector_hfuncs = {
+	.get_modes = jdi_memory_connector_get_modes,
 };
 
-static const struct drm_connector_funcs sharp_memory_connector_funcs = {
+static const struct drm_connector_funcs jdi_memory_connector_funcs = {
 	.reset = drm_atomic_helper_connector_reset,
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
@@ -435,28 +429,28 @@ static const struct drm_connector_funcs sharp_memory_connector_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
 };
 
-static const struct drm_mode_config_funcs sharp_memory_mode_config_funcs = {
+static const struct drm_mode_config_funcs jdi_memory_mode_config_funcs = {
 	.fb_create = create_and_store_fb,
 	.atomic_check = drm_atomic_helper_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
-static const uint32_t sharp_memory_formats[] = {
+static const uint32_t jdi_memory_formats[] = {
 	DRM_FORMAT_XRGB8888,
 };
 
-static const struct drm_display_mode sharp_memory_ls027b7dh01_mode = {
+static const struct drm_display_mode jdi_memory_ls027b7dh01_mode = {
 	DRM_SIMPLE_MODE(400, 240, 59, 35),
 };
 
-DEFINE_DRM_GEM_DMA_FOPS(sharp_memory_fops);
+DEFINE_DRM_GEM_DMA_FOPS(jdi_memory_fops);
 
-static const struct drm_driver sharp_memory_driver = {
+static const struct drm_driver jdi_memory_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
-	.fops = &sharp_memory_fops,
+	.fops = &jdi_memory_fops,
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
-	.name = "sharp_memory",
-	.desc = "Sharp Memory LCD panel",
+	.name = "jdi_memory",
+	.desc = "jdi Memory LCD panel",
 	.date = "20230713",
 	.major = 1,
 	.minor = 1,
@@ -466,11 +460,11 @@ int drm_probe(struct spi_device *spi)
 {
 	const struct drm_display_mode *mode;
 	struct device *dev;
-	struct sharp_memory_panel *panel;
+	struct jdi_memory_panel *panel;
 	struct drm_device *drm;
 	int ret, i;
 
-	printk(KERN_INFO "sharp_memory: entering drm_probe\n");
+	printk(KERN_INFO "jdi_memory: entering drm_probe\n");
 
 	// Get DRM device from SPI struct
 	dev = &spi->dev;
@@ -485,10 +479,10 @@ int drm_probe(struct spi_device *spi)
 	}
 
 	// Allocate panel storage
-	panel = devm_drm_dev_alloc(dev, &sharp_memory_driver,
-		struct sharp_memory_panel, drm);
+	panel = devm_drm_dev_alloc(dev, &jdi_memory_driver,
+		struct jdi_memory_panel, drm);
 	if (IS_ERR(panel)) {
-		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
+		printk(KERN_ERR "jdi_memory: failed to allocate panel\n");
 		return PTR_ERR(panel);
 	}
 	g_panel = panel;
@@ -508,11 +502,11 @@ int drm_probe(struct spi_device *spi)
 	if (ret) {
 		return ret;
 	}
-	drm->mode_config.funcs = &sharp_memory_mode_config_funcs;
+	drm->mode_config.funcs = &jdi_memory_mode_config_funcs;
 
 	// Initialize panel contents
 	panel->spi = spi;
-	mode = &sharp_memory_ls027b7dh01_mode;
+	mode = &jdi_memory_ls027b7dh01_mode;
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
@@ -533,16 +527,16 @@ int drm_probe(struct spi_device *spi)
 	drm->mode_config.max_height = mode->vdisplay;
 
 	// Configure DRM connector
-	ret = drm_connector_init(drm, &panel->connector, &sharp_memory_connector_funcs,
+	ret = drm_connector_init(drm, &panel->connector, &jdi_memory_connector_funcs,
 		DRM_MODE_CONNECTOR_SPI);
 	if (ret) {
 		return ret;
 	}
-	drm_connector_helper_add(&panel->connector, &sharp_memory_connector_hfuncs);
+	drm_connector_helper_add(&panel->connector, &jdi_memory_connector_hfuncs);
 
 	// Initialize DRM pipe
-	ret = drm_simple_display_pipe_init(drm, &panel->pipe, &sharp_memory_pipe_funcs,
-		sharp_memory_formats, ARRAY_SIZE(sharp_memory_formats),
+	ret = drm_simple_display_pipe_init(drm, &panel->pipe, &jdi_memory_pipe_funcs,
+		jdi_memory_formats, ARRAY_SIZE(jdi_memory_formats),
 		NULL, &panel->connector);
 	if (ret) {
 		return ret;
@@ -553,7 +547,7 @@ int drm_probe(struct spi_device *spi)
 
 	drm_mode_config_reset(drm);
 
-	printk(KERN_INFO "sharp_memory: registering DRM device\n");
+	printk(KERN_INFO "jdi_memory: registering DRM device\n");
 	ret = drm_dev_register(drm, 0);
 	if (ret) {
 		return ret;
@@ -563,7 +557,7 @@ int drm_probe(struct spi_device *spi)
 	spi_set_drvdata(spi, drm);
 	drm_fbdev_generic_setup(drm, 0);
 
-	printk(KERN_INFO "sharp_memory: successful probe\n");
+	printk(KERN_INFO "jdi_memory: successful probe\n");
 
 	return 0;
 }
@@ -572,9 +566,9 @@ void drm_remove(struct spi_device *spi)
 {
 	struct drm_device *drm;
 	struct device *dev;
-	struct sharp_memory_panel *panel;
+	struct jdi_memory_panel *panel;
 
-	printk(KERN_INFO "sharp_memory: drm_remove\n");
+	printk(KERN_INFO "jdi_memory: drm_remove\n");
 
 	// Clear global panel
 	g_panel = NULL;
